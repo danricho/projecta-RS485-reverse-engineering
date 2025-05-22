@@ -71,4 +71,4 @@ This script processes a packet log (from [rs485_live_decode_interframe_gaps.py](
 
 Eventually, the plan is to convert the Python script used to unpack the data on the bus into CircuitPython compatible code that can run on an ESP-32 based [Seeed Studio XIAO](https://vi.aliexpress.com/item/1005006987272421.html) and interface is using a [Seeed Studio RS-485 Breakout Board for XIAO](https://vi.aliexpress.com/item/1005008158515139.html). This RS-485 board should power the ESP32 and then, when WiFi is connected, the microcontroller will read and unpack the data then push it over WiFi for use.
 
-
+An initial (untested) version of the CircuitPython script has been added [here](rs485_esp32_bridge.py).
