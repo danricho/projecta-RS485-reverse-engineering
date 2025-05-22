@@ -37,8 +37,38 @@ TRANSFORMER               ││││              ││       ││││   
                                     USB DONGLE                                    
 ```
 
-Eventually, the plan is to convert the Python script used to unpack the data on the bus into CircuitPython compatible code that can run on an ESP-32 based [Seeed Studio XIAO](https://vi.aliexpress.com/item/1005006987272421.html) and interface is using a [Seeed Studio RS-485 Breakout Board for XIAO](https://vi.aliexpress.com/item/1005008158515139.html). This chip will then push the data over WiFi for use.
+## Scripts to Discover and Unpack the Data
 
-## Decoding the Data
+To set up Python:
+```sh
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+```
 
-Scripts will be added here with explanation of the methodology.
+To run a script use the `venv/bin/python xxx.py` command.
+
+Both of the below scripts depent on [rs485_tooling.py](rs485_tooling.py) which provides the functions:
+  - `search_for_value()`: searches a packet for a known value
+  - `unpack_data()`: unpacks data from a packet according to previously discovered packet offsets
+
+### [rs485_live_logger_interframe_gaps.py](rs485_live_logger_interframe_gaps.py)
+
+This script connects to the serial bus and:
+
+- Buffers data until a break of at least 50ms occurs (interframe gap).
+- Dumps the current time and the Buffer Hex to a line in a log file.
+- Displays any known data in the frames as they occur which is helpful to validate a new unpacking location against the LCD display.
+
+### [rs485_post_decode_interframe_gaps.py](rs485_post_decode_interframe_gaps.py)
+
+This script processes a packet log (from [rs485_live_decode_interframe_gaps.py](rs485_live_decode_interframe_gaps.py)) and:
+
+- creates an updated packet log with known data unpacked and added
+- creates a csv of known, unpacked data over time
+- allows desktop testing of potential new data (using the search for known value function)
+
+## Next Steps
+
+Eventually, the plan is to convert the Python script used to unpack the data on the bus into CircuitPython compatible code that can run on an ESP-32 based [Seeed Studio XIAO](https://vi.aliexpress.com/item/1005006987272421.html) and interface is using a [Seeed Studio RS-485 Breakout Board for XIAO](https://vi.aliexpress.com/item/1005008158515139.html). This RS-485 board should power the ESP32 and then, when WiFi is connected, the microcontroller will read and unpack the data then push it over WiFi for use.
+
+
