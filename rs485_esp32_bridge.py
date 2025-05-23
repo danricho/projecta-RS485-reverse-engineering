@@ -13,44 +13,57 @@ import alarm
 # CONFIGURATION SECTION
 # ===============================
 
-WIFI_SSID = "your-ssid"                 # Replace with your Wi-Fi SSID
-WIFI_PASSWORD = "your-password"         # Replace with your Wi-Fi password
-HTTP_ENDPOINT = "http://your-server.com/rs485"  # HTTP server endpoint to post data
+# Define two Wi-Fi networks (primary and backup)
+WIFI_NETWORKS = [
+    ("ssid_primary", "password_primary"),  # Replace with your primary Wi-Fi credentials
+    ("ssid_backup", "password_backup")     # Replace with your secondary Wi-Fi credentials
+]
 
-RECONNECT_DELAY = 30                    # Delay between Wi-Fi reconnect attempts (seconds)
-SLEEP_MODE = "deep"                     # Options: "off", "light", "deep" — controls power saving
-UART_BAUDRATE = 9600                    # Serial baudrate for RS-485
-UART_TIMEOUT = 0.01                     # Non-blocking read timeout for UART
-PACKET_GAP = 0.05                       # Time gap (seconds) to mark end of packet
+HTTP_ENDPOINT = "http://your-server.com/rs485"  # HTTP server URL to POST data to
+
+RECONNECT_DELAY = 30                # Seconds to wait before retrying Wi-Fi connection
+SLEEP_MODE = "deep"                 # Sleep mode to use if Wi-Fi is unavailable: "off", "light", or "deep"
+
+UART_BAUDRATE = 9600                # Baudrate for RS-485 communication
+UART_TIMEOUT = 0.01                 # Timeout for UART read operations (non-blocking)
+PACKET_GAP = 0.05                   # Gap (in seconds) between bytes that indicates end of a packet
+
+# ===============================
+# HARDWARE INITIALIZATION
 # ===============================
 
-# -------------------------------
-# Set up UART for RS-485 communication
-# -------------------------------
+# Set up UART for RS-485 communication using TX/RX pins on the board
 uart = busio.UART(
-    tx=board.TX,                      # Use board-defined TX pin
-    rx=board.RX,                      # Use board-defined RX pin
+    tx=board.TX,
+    rx=board.RX,
     baudrate=UART_BAUDRATE,
-    timeout=UART_TIMEOUT              # Quick timeout to keep loop responsive
+    timeout=UART_TIMEOUT
 )
 
-# -------------------------------
-# Function to unpack RS-485 packet data into structured values
-# -------------------------------
+# Dictionary to accumulate and maintain the most recent values from all packets
+overall_data = {}
+
+# ===============================
+# PACKET PARSER FUNCTION
+# ===============================
+
 def unpack_data(packet):
+    """
+    Unpacks known RS-485 data packet formats into a dictionary of sensor values.
+    """
     data = {}
 
-    # PMDCS packet format (44 bytes long)
+    # 44-byte packet: PMDCS (power module) format
     if len(packet) == 44:
         data['PMDCS_input_voltage'] = int.from_bytes(packet[16:18], 'big', signed=True) / 100.0
         data['PMDCS_output_voltage'] = int.from_bytes(packet[20:22], 'big', signed=True) / 100.0
         data['PMDCS_current'] = int.from_bytes(packet[22:24], 'big', signed=True) / 100.0
 
-    # 102-byte packet (often with 8-byte prefix, which is trimmed)
+    # 102-byte packet: Same content as 94 byte packet... has an 8-byte prefix (trimmed to get real 94-byte payload)
     if len(packet) == 102:
         packet = packet[8:]
 
-    # Main telemetry packet (94 bytes)
+    # 94-byte packet: main telemetry data format
     if len(packet) == 94:
         data['solar_input_voltage_TBC'] = int.from_bytes(packet[4:6], 'big', signed=True) / 100.0
         data['solar_input_current'] = int.from_bytes(packet[6:8], 'big', signed=True) / 100.0
@@ -66,22 +79,33 @@ def unpack_data(packet):
 
     return data
 
-# -------------------------------
-# Attempt to connect to Wi-Fi
-# -------------------------------
-def connect_wifi():
-    try:
-        wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
-        print("Connected to Wi-Fi:", wifi.radio.ipv4_address)
-        return True
-    except Exception as e:
-        print("Wi-Fi connection failed:", e)
-        return False
+# ===============================
+# WI-FI CONNECTION FUNCTION
+# ===============================
 
-# -------------------------------
-# Sleep wrapper depending on mode
-# -------------------------------
+def connect_wifi():
+    """
+    Tries to connect to each configured Wi-Fi network in order.
+    Returns True if connected, False otherwise.
+    """
+    for ssid, password in WIFI_NETWORKS:
+        try:
+            print(f"Attempting Wi-Fi connection to: {ssid}")
+            wifi.radio.connect(ssid, password)
+            print("Wi-Fi connected:", wifi.radio.ipv4_address)
+            return True
+        except Exception as e:
+            print(f"Failed to connect to {ssid}: {e}")
+    return False
+
+# ===============================
+# SLEEP HANDLER FUNCTION
+# ===============================
+
 def sleep_mode(delay):
+    """
+    Sleeps for a given number of seconds using the configured power-saving mode.
+    """
     print(f"Sleeping for {delay} seconds using mode: {SLEEP_MODE}")
     alarm_time = alarm.time.TimeAlarm(monotonic_time=time.monotonic() + delay)
 
@@ -92,62 +116,73 @@ def sleep_mode(delay):
     else:
         time.sleep(delay)
 
-# -------------------------------
-# Initial Wi-Fi connection
-# If it fails, enter sleep cycle
-# -------------------------------
+# ===============================
+# STARTUP: Attempt Wi-Fi connection or sleep
+# ===============================
+
+# If not already connected, try connecting. If failed, go to sleep.
 if not wifi.radio.connected and not connect_wifi():
     sleep_mode(RECONNECT_DELAY)
 
-# -------------------------------
-# Main operation loop
-# -------------------------------
+# ===============================
+# MAIN LOOP
+# ===============================
+
+# Only enter main loop if Wi-Fi is connected
 if wifi.radio.connected:
-    # Set up HTTP client session
+    # Set up HTTP client session using the active Wi-Fi connection
     pool = socketpool.SocketPool(wifi.radio)
     requests = adafruit_requests.Session(pool, None)
 
-    buffer = bytearray()               # Holds current incoming packet
-    last_rx = time.monotonic()        # Timestamp of last byte received
+    # Buffer to accumulate incoming serial bytes into a packet
+    buffer = bytearray()
+    last_rx = time.monotonic()  # Time when the last byte was received
 
     while True:
-        data = uart.read(1)           # Read one byte at a time
+        data = uart.read(1)  # Read one byte at a time from RS-485
         now = time.monotonic()
 
         if data:
+            # If byte is received, add to buffer and reset the timer
             buffer += data
             last_rx = now
+
         elif buffer and (now - last_rx) > PACKET_GAP:
-            # A packet has finished (idle > PACKET_GAP)
+            # No data received for >50ms => Packet is complete
             print("Packet received:", buffer)
 
             try:
                 unpacked = unpack_data(buffer)
 
                 if unpacked:
+                    # Merge new values into overall_data dictionary
+                    overall_data.update(unpacked)
                     print("Unpacked data:", unpacked)
-                    response = requests.post(HTTP_ENDPOINT, json=unpacked)
-                    print("Posted:", response.status_code)
-                    response.close()
-                else:
-                    print("Ignored packet (invalid or unrecognized format).")
 
+                    # Only POST the data if this is a full 94-byte or 102-byte packet
+                    if len(buffer) in (94, 102):
+                        print("Sending overall data:", overall_data)
+                        response = requests.post(HTTP_ENDPOINT, json=overall_data)
+                        print("Server response:", response.status_code)
+                        response.close()
+                else:
+                    print("Unrecognized packet format. Skipped.")
             except Exception as e:
                 print("Error while processing packet:", e)
 
-            buffer = bytearray()  # Reset for next packet
+            # Clear buffer for the next packet
+            buffer = bytearray()
 
-        # If Wi-Fi drops during operation, sleep and retry
+        # Check Wi-Fi connection health
         if not wifi.radio.connected:
-            print("Wi-Fi connection lost.")
+            print("Wi-Fi disconnected. Sleeping before retry...")
             sleep_mode(RECONNECT_DELAY)
             connect_wifi()
 
-        time.sleep(0.005)  # Small delay to reduce CPU load
+        # Small delay to prevent tight loop from hogging the CPU
+        time.sleep(0.005)
 
-# -------------------------------
-# Fallback if no Wi-Fi from start
-# -------------------------------
+# If Wi-Fi couldn't be established at startup, go to sleep and retry later
 else:
-    print("Initial Wi-Fi failed. Entering sleep.")
+    print("Wi-Fi unavailable at startup. Sleeping...")
     sleep_mode(RECONNECT_DELAY)
